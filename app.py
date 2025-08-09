@@ -31,7 +31,7 @@ try:
     AZURE_OPENAI_ENDPOINT = st.secrets["AZURE_OPENAI_ENDPOINT"]  # e.g., https://<your-openai>.openai.azure.com/
     AZURE_OPENAI_API_VERSION = st.secrets.get("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
     AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY", AZURE_API_KEY)  # reuse if same key
-    GPT_DEPLOYMENT = st.secrets.get("GPT_DEPLOYMENT", "gpt-4o-mini")  # put your deployment name
+    GPT_DEPLOYMENT = st.secrets.get("GPT_DEPLOYMENT", "gpt-4")  # put your deployment name
 except Exception:
     st.error("Missing secrets. Please set AZURE_DI_ENDPOINT, AZURE_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_API_KEY, and GPT_DEPLOYMENT in secrets.")
     st.stop()
