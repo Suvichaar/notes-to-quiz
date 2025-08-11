@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+from streamlit.components.v1 import html as st_html  # <-- inline HTML viewer
 from PIL import Image
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
@@ -415,7 +416,22 @@ with tab_all:
                 mime="text/html"
             )
 
-            st.info("AMP pages often won’t render inside Streamlit due to sandboxing/CSP. Download and open locally or deploy.")
+            # ---------------------------
+            # 👀 Live HTML Viewer (inline)
+            # ---------------------------
+            st.markdown("### 👀 Live HTML Preview")
+            h = st.slider("Preview height (px)", min_value=400, max_value=1600, value=900, step=50)
+            full_width = st.checkbox("Force full viewport width (100vw)", value=True,
+                                     help="Overrides container width so the preview stretches edge-to-edge.")
+            style = f"width: {'100vw' if full_width else '100%'}; height: {h}px; border: 0; margin: 0; padding: 0;"
+            # NOTE: AMP pages can have CSP/sandbox restrictions; inline preview may not fully behave like a real AMP runtime.
+            st_html(final_html, height=h, scrolling=True) if not full_width else st_html(
+                f'<div style="position:relative;left:50%;right:50%;margin-left:-50vw;margin-right:-50vw;{style}">{final_html}</div>',
+                height=h,
+                scrolling=True
+            )
+
+            st.info("AMP pages may not fully render inside Streamlit due to CSP/sandbox. For a faithful view, download and open in a real browser or deploy to a server.")
         except Exception as e:
             st.error(f"Build failed: {e}")
     elif not (questions_data and up_tpl):
