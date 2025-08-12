@@ -10,7 +10,6 @@ from PIL import Image
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from openai import AzureOpenAI
-import boto3  # <-- S3 upload
 
 # ---------------------------
 # Streamlit page config
@@ -27,7 +26,6 @@ st.caption("Upload notes image(s) or a pre-made quiz image (or JSON), plus an AM
 # Secrets / Config (from st.secrets)
 # ---------------------------
 try:
-    # Azure
     AZURE_DI_ENDPOINT = st.secrets["AZURE_DI_ENDPOINT"]      # e.g., https://<your-di>.cognitiveservices.azure.com/
     AZURE_API_KEY = st.secrets["AZURE_API_KEY"]
 
@@ -35,16 +33,8 @@ try:
     AZURE_OPENAI_API_VERSION = st.secrets.get("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
     AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY", AZURE_API_KEY)  # reuse if same key
     GPT_DEPLOYMENT = st.secrets.get("GPT_DEPLOYMENT", "gpt-4")  # put your deployment name
-
-    # AWS / S3
-    AWS_ACCESS_KEY_ID     = st.secrets["AWS_ACCESS_KEY_ID"]
-    AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
-    AWS_REGION            = st.secrets.get("AWS_REGION", "ap-south-1")
-    AWS_BUCKET            = st.secrets.get("AWS_BUCKET", "suvichaarapp")
-    S3_PREFIX             = st.secrets.get("S3_PREFIX", "")  # set "" for bucket root, e.g., "" or "media"
-    CDN_HTML_BASE         = st.secrets.get("CDN_HTML_BASE", "https://stories.suvichaar.org/")  # your CloudFront domain
 except Exception:
-    st.error("Missing secrets. Please set all required Azure and AWS keys in secrets.")
+    st.error("Missing secrets. Please set AZURE_DI_ENDPOINT, AZURE_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_API_KEY, and GPT_DEPLOYMENT in secrets.")
     st.stop()
 
 # ---------------------------
@@ -60,14 +50,6 @@ gpt_client = AzureOpenAI(
     api_version=AZURE_OPENAI_API_VERSION,
     azure_endpoint=AZURE_OPENAI_ENDPOINT,
 )
-
-def get_s3_client():
-    return boto3.client(
-        "s3",
-        region_name=AWS_REGION,
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    )
 
 # ---------------------------
 # Prompts
@@ -306,29 +288,6 @@ def fill_template(template: str, data: dict) -> str:
         html = html.replace(f"{{{{{k}|safe}}}}", v)
     return html
 
-def upload_html_to_s3(html_text: str, filename: str):
-    """
-    Upload HTML to S3 and return (s3_key, cdn_url).
-    No ACL is set (works with CloudFront + Origin Access).
-    """
-    if not filename.lower().endswith(".html"):
-        filename = f"{filename}.html"
-
-    s3_key = f"{S3_PREFIX.strip('/')}/{filename}" if S3_PREFIX else filename
-
-    s3 = get_s3_client()
-    s3.put_object(
-        Bucket=AWS_BUCKET,
-        Key=s3_key,
-        Body=html_text.encode("utf-8"),
-        ContentType="text/html; charset=utf-8",
-        CacheControl="public, max-age=300",
-        ContentDisposition=f'inline; filename="{filename}"',
-    )
-
-    cdn_url = f"{CDN_HTML_BASE}{s3_key}"
-    return s3_key, cdn_url
-
 # ---------------------------
 # 🧩 Builder UI
 # ---------------------------
@@ -442,17 +401,11 @@ with tab_all:
             # merge
             final_html = fill_template(template_html, placeholders)
 
-            # save timestamped file locally
+            # save timestamped file
             ts_name = f"final_quiz_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
             Path(ts_name).write_text(final_html, encoding="utf-8")
 
-            # upload to S3 (no ACL line)
-            with st.spinner("☁️ Uploading to S3…"):
-                s3_key, cdn_url = upload_html_to_s3(final_html, ts_name)
-
-            st.success(f"✅ Final HTML generated and uploaded to S3: s3://{AWS_BUCKET}/{s3_key}")
-            st.markdown(f"**CDN URL:** {cdn_url}")
-
+            st.success(f"✅ Final HTML generated and saved as **{ts_name}**")
             with st.expander("🔍 HTML Preview (source)"):
                 st.code(final_html[:120000], language="html")
 
