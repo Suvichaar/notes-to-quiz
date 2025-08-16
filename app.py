@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import streamlit as st
 from streamlit.components.v1 import html as st_html  # inline HTML viewer
@@ -186,10 +187,43 @@ Return only the JSON object.
 
 def clean_model_json(txt: str) -> str:
     """Remove code fences if model returns ```json ... ``` or ``` ... ``` and trim."""
+    if not isinstance(txt, str):
+        return ""
     fenced = re.findall(r"```(?:json)?\s*(.*?)```", txt, flags=re.DOTALL)
     if fenced:
         return fenced[0].strip()
     return txt.strip()
+
+
+def extract_first_json_object(text: str) -> Optional[str]:
+    """Extract the first top-level {...} JSON object from a messy string."""
+    if not isinstance(text, str):
+        return None
+    in_str = False
+    esc = False
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                if depth:
+                    depth -= 1
+                    if depth == 0 and start != -1:
+                        return text[start:i+1]
+    return None
 
 
 def guess_mime(image_bytes: bytes) -> str:
@@ -257,11 +291,11 @@ def gpt_ocr_text_to_questions(raw_text: str) -> dict:
     content = clean_model_json(resp.choices[0].message.content)
     try:
         return json.loads(content)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", content, flags=re.DOTALL)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+    except Exception:
+        obj = extract_first_json_object(content)
+        if obj:
+            return json.loads(obj)
+        raise ValueError(f"Model did not return JSON. First 200 chars: {content[:200]!r}")
 
 
 def gpt_notes_to_questions(notes_text: str) -> dict:
@@ -277,11 +311,11 @@ def gpt_notes_to_questions(notes_text: str) -> dict:
     content = clean_model_json(resp.choices[0].message.content)
     try:
         return json.loads(content)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", content, flags=re.DOTALL)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+    except Exception:
+        obj = extract_first_json_object(content)
+        if obj:
+            return json.loads(obj)
+        raise ValueError(f"Notes→MCQ JSON parsing failed. First 200 chars: {content[:200]!r}")
 
 
 def gpt_questions_to_placeholders(questions_data: dict) -> dict:
@@ -290,23 +324,36 @@ def gpt_questions_to_placeholders(questions_data: dict) -> dict:
     if len(q) > 5:
         questions_data = {"questions": q[:5]}
 
-    resp = gpt_client.chat.completions.create(
-        model=GPT_DEPLOYMENT,
-        temperature=0,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT_QA_TO_PLACEHOLDERS},
-            {"role": "user", "content": json.dumps(questions_data, ensure_ascii=False)},
-        ],
-    )
+    # Support both modern and older Azure OpenAI client shapes, just in case.
+    if hasattr(gpt_client, "chat_completions"):
+        resp = gpt_client.chat_completions.create(
+            model=GPT_DEPLOYMENT,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_QA_TO_PLACEHOLDERS},
+                {"role": "user", "content": json.dumps(questions_data, ensure_ascii=False)},
+            ],
+        )
+        choice_msg = getattr(resp.choices[0], "message", getattr(resp.choices[0], "delta", None))
+        content = clean_model_json(choice_msg.content if choice_msg else resp.choices[0].message.content)
+    else:
+        resp = gpt_client.chat.completions.create(
+            model=GPT_DEPLOYMENT,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_QA_TO_PLACEHOLDERS},
+                {"role": "user", "content": json.dumps(questions_data, ensure_ascii=False)},
+            ],
+        )
+        content = clean_model_json(resp.choices[0].message.content)
 
-    content = clean_model_json(resp.choices[0].message.content)
     try:
         return json.loads(content)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", content, flags=re.DOTALL)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+    except Exception:
+        obj = extract_first_json_object(content)
+        if obj:
+            return json.loads(obj)
+        raise ValueError(f"Placeholder JSON parsing failed. First 200 chars: {content[:200]!r}")
 
 
 def build_attr_value(key: str, val: str) -> str:
@@ -314,9 +361,9 @@ def build_attr_value(key: str, val: str) -> str:
     if not key.endswith("attr") or not val:
         return ""
     m = re.match(r"s(\d+)option(\d)attr$", key)
-    if m and val.strip().lower() == "correct":
+    if m and str(val).strip().lower() == "correct":
         return f"option-{m.group(2)}-correct"
-    return val
+    return str(val)
 
 
 def fill_template(template: str, data: dict) -> str:
@@ -324,7 +371,7 @@ def fill_template(template: str, data: dict) -> str:
     rendered = {}
     for k, v in (data or {}).items():
         if k.endswith("attr"):
-            rendered[k] = build_attr_value(k, str(v))
+            rendered[k] = build_attr_value(k, v)
         else:
             rendered[k] = "" if v is None else str(v)
 
@@ -493,7 +540,7 @@ with tab_all:
                         )
 
             # read template
-            template_html = up_tpl.getvalue().decode("utf-8")
+            template_html = up_tpl.getvalue().decode("utf-8", errors="ignore")
 
             # merge
             final_html = fill_template(template_html, placeholders)
