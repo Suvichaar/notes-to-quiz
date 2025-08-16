@@ -464,11 +464,14 @@ def inject_publisher_meta(html: str, *, site_name: str, canonical_url: str, publ
         return html.replace("</head>", head_inject + "\n</head>")
     return head_inject + html
 
-def upload_html_to_s3(html_text: str, filename: str):
+def upload_html_to_s3(html_text: str, filename: str, prefix_override: str = None):
     if not filename.lower().endswith(".html"):
         filename = f"{filename}.html"
-    # Flexible prefix (can be empty for root)
-    s3_key = f"{HTML_S3_PREFIX.strip('/')}/{filename}" if HTML_S3_PREFIX else filename
+
+    # Use override if given, else fall back to HTML_S3_PREFIX
+    effective_prefix = prefix_override if prefix_override is not None else HTML_S3_PREFIX
+    s3_key = f"{effective_prefix.strip('/')}/{filename}" if effective_prefix else filename
+
     s3 = get_s3_client()
     s3.put_object(
         Bucket=AWS_BUCKET,
@@ -728,7 +731,6 @@ with tab_all:
             Path(ts_name).write_text(final_html, encoding="utf-8")
 
             # Upload with runtime prefix override
-            global HTML_S3_PREFIX
             prev_prefix = HTML_S3_PREFIX
             HTML_S3_PREFIX = "" if use_root else html_prefix_override
 
