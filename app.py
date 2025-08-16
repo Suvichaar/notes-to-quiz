@@ -278,8 +278,18 @@ def ocr_extract_many(images_bytes_list) -> str:
     return "\n\n".join(chunks).strip()
 
 
+def safe_json_loads(content: str, label: str):
+    """Try json.loads, else extract the first {...} object."""
+    try:
+        return json.loads(content)
+    except Exception:
+        obj = extract_first_json_object(content)
+        if obj:
+            return json.loads(obj)
+        raise ValueError(f"{label} JSON parsing failed. First 200 chars: {content[:200]!r}")
+
+
 def gpt_ocr_text_to_questions(raw_text: str) -> dict:
-    """Convert OCR text that already contains questions into structured questions JSON."""
     resp = gpt_client.chat.completions.create(
         model=GPT_DEPLOYMENT,
         temperature=0,
@@ -288,18 +298,11 @@ def gpt_ocr_text_to_questions(raw_text: str) -> dict:
             {"role": "user", "content": raw_text},
         ],
     )
-    content = clean_model_json(resp.choices[0].message.content)
-    try:
-        return json.loads(content)
-    except Exception:
-        obj = extract_first_json_object(content)
-        if obj:
-            return json.loads(obj)
-        raise ValueError(f"Model did not return JSON. First 200 chars: {content[:200]!r}")
+    content = clean_model_json(resp.choices[0].message.content or "")
+    return safe_json_loads(content, "OCR→MCQ")
 
 
 def gpt_notes_to_questions(notes_text: str) -> dict:
-    """Generate 5 MCQs from raw notes text."""
     resp = gpt_client.chat.completions.create(
         model=GPT_DEPLOYMENT,
         temperature=0,
@@ -308,62 +311,34 @@ def gpt_notes_to_questions(notes_text: str) -> dict:
             {"role": "user", "content": notes_text},
         ],
     )
-    content = clean_model_json(resp.choices[0].message.content)
-    try:
-        return json.loads(content)
-    except Exception:
-        obj = extract_first_json_object(content)
-        if obj:
-            return json.loads(obj)
-        raise ValueError(f"Notes→MCQ JSON parsing failed. First 200 chars: {content[:200]!r}")
+    content = clean_model_json(resp.choices[0].message.content or "")
+    return safe_json_loads(content, "Notes→MCQ")
 
 
 def gpt_questions_to_placeholders(questions_data: dict) -> dict:
-    """Map structured questions JSON into flat placeholder JSON for AMP template."""
     q = questions_data.get("questions", [])
     if len(q) > 5:
         questions_data = {"questions": q[:5]}
-
-    # Support both modern and older Azure OpenAI client shapes, just in case.
-    if hasattr(gpt_client, "chat_completions"):
-        resp = gpt_client.chat_completions.create(
-            model=GPT_DEPLOYMENT,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_QA_TO_PLACEHOLDERS},
-                {"role": "user", "content": json.dumps(questions_data, ensure_ascii=False)},
-            ],
-        )
-        choice_msg = getattr(resp.choices[0], "message", getattr(resp.choices[0], "delta", None))
-        content = clean_model_json(choice_msg.content if choice_msg else resp.choices[0].message.content)
-    else:
-        resp = gpt_client.chat.completions.create(
-            model=GPT_DEPLOYMENT,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_QA_TO_PLACEHOLDERS},
-                {"role": "user", "content": json.dumps(questions_data, ensure_ascii=False)},
-            ],
-        )
-        content = clean_model_json(resp.choices[0].message.content)
-
-    try:
-        return json.loads(content)
-    except Exception:
-        obj = extract_first_json_object(content)
-        if obj:
-            return json.loads(obj)
-        raise ValueError(f"Placeholder JSON parsing failed. First 200 chars: {content[:200]!r}")
+    resp = gpt_client.chat.completions.create(
+        model=GPT_DEPLOYMENT,
+        temperature=0,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT_QA_TO_PLACEHOLDERS},
+            {"role": "user", "content": json.dumps(questions_data, ensure_ascii=False)},
+        ],
+    )
+    content = clean_model_json(resp.choices[0].message.content or "")
+    return safe_json_loads(content, "Placeholder")
 
 
 def build_attr_value(key: str, val: str) -> str:
-    """Convert s2option3attr="correct" → "option-3-correct"; else passthrough or empty."""
+    """Convert s2option3attr='correct' → 'option-3-correct'; else passthrough/empty."""
     if not key.endswith("attr") or not val:
         return ""
     m = re.match(r"s(\d+)option(\d)attr$", key)
-    if m and str(val).strip().lower() == "correct":
+    if m and val.strip().lower() == "correct":
         return f"option-{m.group(2)}-correct"
-    return str(val)
+    return val
 
 
 def fill_template(template: str, data: dict) -> str:
@@ -371,14 +346,13 @@ def fill_template(template: str, data: dict) -> str:
     rendered = {}
     for k, v in (data or {}).items():
         if k.endswith("attr"):
-            rendered[k] = build_attr_value(k, v)
+            rendered[k] = build_attr_value(k, str(v))
         else:
             rendered[k] = "" if v is None else str(v)
-
     html = template
     for k, v in rendered.items():
         html = html.replace(f"{{{{{k}}}}}", v)
-        html = html.replace(f"{{{{{k}|safe}}}}", v)
+        html = html.replace(f"{{{{{k}|safe}}}}}", v)
     return html
 
 
@@ -389,10 +363,7 @@ def upload_html_to_s3(html_text: str, filename: str):
     """
     if not filename.lower().endswith(".html"):
         filename = f"{filename}.html"
-
-    # Key = <prefix>/<filename>.html  (prefix from secrets)
     s3_key = f"{HTML_S3_PREFIX.strip('/')}/{filename}" if HTML_S3_PREFIX else filename
-
     s3 = get_s3_client()
     s3.put_object(
         Bucket=AWS_BUCKET,
@@ -402,11 +373,8 @@ def upload_html_to_s3(html_text: str, filename: str):
         CacheControl="public, max-age=300",
         ContentDisposition=f'inline; filename="{filename}"',
     )
-
-    # CDN URL = https://stories.suvichaar.org/<prefix>/<filename>.html
     cdn_url = f"{CDN_HTML_BASE.rstrip('/')}/{s3_key}"
     return s3_key, cdn_url
-
 
 # ---------------------------
 # 🧩 Builder UI
