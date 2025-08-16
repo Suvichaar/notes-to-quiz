@@ -39,14 +39,14 @@ try:
     AZURE_OPENAI_API_KEY = st.secrets.get("AZURE_OPENAI_API_KEY", AZURE_API_KEY)  # reuse if same key
     GPT_DEPLOYMENT = st.secrets.get("GPT_DEPLOYMENT", "gpt-4")  # your deployment name
 
-    # AWS / S3 (must exist in secrets)
+    # AWS / S3
     AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
     AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
     AWS_REGION = st.secrets.get("AWS_REGION", "ap-south-1")
     AWS_BUCKET = st.secrets.get("AWS_BUCKET", "suvichaarapp")
 
     # HTML upload path + CDN
-    # Set HTML_S3_PREFIX="" to upload to the bucket root and produce URLs like https://stories.suvichaar.org/<file>.html
+    # Set HTML_S3_PREFIX="" to upload to bucket root and get URLs like https://stories.suvichaar.org/<file>.html
     HTML_S3_PREFIX = st.secrets.get("HTML_S3_PREFIX", "webstory-html")
     CDN_HTML_BASE = st.secrets.get("CDN_HTML_BASE", "https://stories.suvichaar.org/")
 except Exception:
@@ -66,7 +66,6 @@ gpt_client = AzureOpenAI(
     api_version=AZURE_OPENAI_API_VERSION,
     azure_endpoint=AZURE_OPENAI_ENDPOINT,
 )
-
 
 def get_s3_client():
     return boto3.client(
@@ -184,7 +183,6 @@ Return only the JSON object.
 # ---------------------------
 # Helpers
 # ---------------------------
-
 def clean_model_json(txt: str) -> str:
     """Remove code fences if model returns ```json ... ``` or ``` ... ``` and trim."""
     if not isinstance(txt, str):
@@ -193,7 +191,6 @@ def clean_model_json(txt: str) -> str:
     if fenced:
         return fenced[0].strip()
     return txt.strip()
-
 
 def extract_first_json_object(text: str) -> Optional[str]:
     """Extract the first top-level {...} JSON object from a messy string."""
@@ -225,7 +222,6 @@ def extract_first_json_object(text: str) -> Optional[str]:
                         return text[start:i+1]
     return None
 
-
 def guess_mime(image_bytes: bytes) -> str:
     """Infer a reasonable MIME type from image bytes for DI content_type."""
     try:
@@ -241,7 +237,6 @@ def guess_mime(image_bytes: bytes) -> str:
         }.get(fmt, "application/octet-stream")
     except Exception:
         return "application/octet-stream"
-
 
 def ocr_extract(image_bytes: bytes) -> str:
     """OCR via Azure Document Intelligence prebuilt-read for one image."""
@@ -267,7 +262,6 @@ def ocr_extract(image_bytes: bytes) -> str:
                 lines.append(line.content)
     return "\n".join(lines).strip()
 
-
 def ocr_extract_many(images_bytes_list) -> str:
     """OCR multiple images and concatenate with page separators."""
     chunks = []
@@ -276,7 +270,6 @@ def ocr_extract_many(images_bytes_list) -> str:
         if text:
             chunks.append(f"[[PAGE {idx}]]\n{text}")
     return "\n\n".join(chunks).strip()
-
 
 def safe_json_loads(content: str, label: str):
     """Try json.loads, else extract the first {...} object."""
@@ -287,7 +280,6 @@ def safe_json_loads(content: str, label: str):
         if obj:
             return json.loads(obj)
         raise ValueError(f"{label} JSON parsing failed. First 200 chars: {content[:200]!r}")
-
 
 def gpt_ocr_text_to_questions(raw_text: str) -> dict:
     resp = gpt_client.chat.completions.create(
@@ -301,7 +293,6 @@ def gpt_ocr_text_to_questions(raw_text: str) -> dict:
     content = clean_model_json(resp.choices[0].message.content or "")
     return safe_json_loads(content, "OCR→MCQ")
 
-
 def gpt_notes_to_questions(notes_text: str) -> dict:
     resp = gpt_client.chat.completions.create(
         model=GPT_DEPLOYMENT,
@@ -313,7 +304,6 @@ def gpt_notes_to_questions(notes_text: str) -> dict:
     )
     content = clean_model_json(resp.choices[0].message.content or "")
     return safe_json_loads(content, "Notes→MCQ")
-
 
 def gpt_questions_to_placeholders(questions_data: dict) -> dict:
     q = questions_data.get("questions", [])
@@ -330,7 +320,6 @@ def gpt_questions_to_placeholders(questions_data: dict) -> dict:
     content = clean_model_json(resp.choices[0].message.content or "")
     return safe_json_loads(content, "Placeholder")
 
-
 def build_attr_value(key: str, val: str) -> str:
     """Convert s2option3attr='correct' → 'option-3-correct'; else passthrough/empty."""
     if not key.endswith("attr") or not val:
@@ -340,7 +329,6 @@ def build_attr_value(key: str, val: str) -> str:
         return f"option-{m.group(2)}-correct"
     return val
 
-
 def fill_template(template: str, data: dict) -> str:
     """Replace {{key}} and {{key|safe}} using placeholder data, handling *attr keys specially."""
     rendered = {}
@@ -349,18 +337,16 @@ def fill_template(template: str, data: dict) -> str:
             rendered[k] = build_attr_value(k, str(v))
         else:
             rendered[k] = "" if v is None else str(v)
+
     html = template
+    # Important: replace the |safe variant first, then the plain variant
     for k, v in rendered.items():
-        html = html.replace(f"{{{{{k}}}}}", v)
-        html = html.replace(f"{{{{{k}|safe}}}}}", v)
+        html = html.replace(f"{{{{{k}|safe}}}}", v)  # correct f-string braces
+        html = html.replace(f"{{{{{k}}}}}", v)       # correct f-string braces
     return html
 
-
 def upload_html_to_s3(html_text: str, filename: str):
-    """
-    Upload HTML to S3 and return (s3_key, cdn_url).
-    No ACL is set (works with CloudFront + Origin Access).
-    """
+    """Upload HTML to S3 and return (s3_key, cdn_url)."""
     if not filename.lower().endswith(".html"):
         filename = f"{filename}.html"
     s3_key = f"{HTML_S3_PREFIX.strip('/')}/{filename}" if HTML_S3_PREFIX else filename
