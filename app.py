@@ -130,7 +130,7 @@ def validate_template_placeholders(template_html: str):
         if f"{{{{{k}}}}}" not in template_html and f"{{{{{k}|safe}}}}" not in template_html:
             missing.append(k)
     # Report only missing required; optional listed separately for info.
-    optional_present = [k for k in OPTIONAL_AUDIO_KEYS if (f"{{{{{k}}}}}" in template_html or f"{{{{{k}|safe}}}}}" in template_html)]
+    optional_present = [k for k in OPTIONAL_AUDIO_KEYS if (f"{{{{{k}}}}}" in template_html or f"{{{{{k}|safe}}}}" in template_html)]
     return missing, optional_present
 
 
